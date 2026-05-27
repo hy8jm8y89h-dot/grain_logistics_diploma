@@ -1,0 +1,4 @@
+port,capacity_thousand_tons,current_volume_thousand_tons,waiting_days,risk_factor
+Астрахань,6000,4100,2,1.10
+Кавказ,18000,14800,5,1.25
+Усть-Луга,12000,7600,1,0.95
