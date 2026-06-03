@@ -12,7 +12,8 @@ from modules.external_data import (
     get_cbr_usd_rate,
     get_main_thematic_news,
     calculate_news_risk_from_articles,
-    generate_news_digest
+    generate_news_digest,
+    get_auto_market_indicators
 )
 
 from modules.market_model import (
@@ -121,6 +122,7 @@ terminals_geo_df = load_terminals_geo(TERMINALS_GEO_PATH)
 ports_geo_df = load_ports_geo(PORTS_GEO_PATH)
 foreign_geo_df = load_foreign_geo(FOREIGN_GEO_PATH)
 usd_data = get_cbr_usd_rate()
+market_indicators = get_auto_market_indicators()
 
 
 # =========================
@@ -237,20 +239,30 @@ with market_col1:
     )
 
 with market_col2:
+    st.caption(
+        f"Авто: {market_indicators['wheat_price_usd_t']} долл./т. "
+        f"Источник: {market_indicators['wheat_source']}."
+    )
+
     grain_price = st.slider(
         "Мировая цена зерна, долл./т",
         min_value=100,
         max_value=400,
-        value=230,
+        value=int(round(market_indicators["wheat_price_usd_t"])),
         step=5
     )
 
 with market_col3:
+    st.caption(
+        f"Индикатор нефти: {market_indicators['oil_price_usd_bbl']} долл./барр. "
+        f"Расчетное изменение топлива: {market_indicators['fuel_change_percent']}%."
+    )
+
     fuel_change = st.slider(
         "Изменение стоимости топлива, %",
         min_value=-30,
         max_value=80,
-        value=0,
+        value=int(round(market_indicators["fuel_change_percent"])),
         step=1
     )
 
@@ -405,37 +417,18 @@ st.info(
     f"{selected_port_load['status']}."
 )
 
-port_view = port_load_df.rename(
-    columns={
-        "port": "Порт",
-        "capacity_thousand_tons": "Пропускная способность, тыс. т",
-        "current_volume_thousand_tons": "Текущий объем, тыс. т",
-        "waiting_days": "Ожидание, суток",
-        "risk_factor": "Коэффициент риска",
-        "base_load_percent": "Базовая загрузка, %",
-        "adjusted_load_percent": "Расчетная загрузка, %",
-        "status": "Статус"
-    }
-)
-
+# график загрузки портов
 st.dataframe(port_view, width="stretch")
-
-port_fig = px.bar(
-    port_view,
-    x="Порт",
-    y="Расчетная загрузка, %",
-    color="Статус",
-    text="Расчетная загрузка, %",
-    title="Сравнение загрузки морских портов назначения"
-)
-
-port_fig.update_traces(textposition="outside")
-port_fig.update_layout(
-    yaxis_title="Загрузка, %",
-    xaxis_title="Морской порт"
-)
-
 st.plotly_chart(port_fig, width="stretch")
+
+# <<< Вставляем здесь блок MarineTraffic >>>
+with st.expander("Подключение AIS / MarineTraffic"):
+    st.write(
+        "В промышленной версии системы возможно подключение AIS-данных "
+        "через MarineTraffic API. На этапе прототипа используется расчетная "
+        "оценка загрузки портов на основе пропускной способности, ожидания "
+        "обработки и новостного риска."
+    )
 
 # =========================
 # Расчет общего рыночного риска
@@ -860,7 +853,17 @@ st.caption(
     "зарубежное направление и расчетные участки маршрута."
 )
 
-map_selected_destination = selected_destination if route_mode == "Экспортный маршрут с зарубежным направлением" else None
+show_foreign_on_map = True
+
+if route_mode == "Экспортный маршрут с зарубежным направлением":
+    show_foreign_on_map = st.checkbox(
+        "Показывать зарубежное направление на карте",
+        value=True
+    )
+if route_mode == "Экспортный маршрут с зарубежным направлением" and show_foreign_on_map:
+    map_selected_destination = selected_destination
+else:
+    map_selected_destination = None
 
 terminal_map = build_terminal_map(
     terminal_load_df=terminal_load_df,

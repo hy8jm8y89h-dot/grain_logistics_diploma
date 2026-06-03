@@ -82,24 +82,30 @@ def build_terminal_map(
         ).add_to(m)
 
         for _, row in map_df.dropna(subset=["lat", "lon"]).iterrows():
-            folium.PolyLine(
-                locations=[
-                    [row["lat"], row["lon"]],
-                    [port_lat, port_lon]
-                ],
-                color="gray",
-                weight=1,
-                opacity=0.3,
-                tooltip="Внутрироссийский участок"
-            ).add_to(m)
+            line_weight = max(1, min(6, row["planned_volume_thousand_tons"] / 250))
 
-    if (
+        folium.PolyLine(
+            locations=[
+            [row["lat"], row["lon"]],
+            [port_lat, port_lon]
+            ],
+            color="blue",
+            weight=line_weight,
+            opacity=0.35,
+            tooltip=(
+        f"Внутрироссийский участок: {row['terminal']} → {selected_port}. "
+        f"Плановый объем: {row['planned_volume_thousand_tons']} тыс. т. "
+        f"Загрузка терминала: {row['load_percent']}%."
+    )
+).add_to(m)
+
+        if (
         foreign_geo_df is not None
         and selected_destination is not None
         and port_lat is not None
         and port_lon is not None
     ):
-        selected_foreign = foreign_geo_df[
+            selected_foreign = foreign_geo_df[
             foreign_geo_df["destination"] == selected_destination
         ]
 
@@ -117,14 +123,17 @@ def build_terminal_map(
             ).add_to(m)
 
             folium.PolyLine(
-                locations=[
-                    [port_lat, port_lon],
-                    [foreign["lat"], foreign["lon"]]
-                ],
-                color="red",
-                weight=3,
-                opacity=0.75,
-                tooltip="Международный участок маршрута"
-            ).add_to(m)
+            locations=[
+            [port_lat, port_lon],
+            [foreign["lat"], foreign["lon"]]
+            ],
+            color="red",
+            weight=5,
+            opacity=0.8,
+            tooltip=(
+        f"Международный участок: {selected_port} → "
+        f"{foreign['destination']} ({foreign['country']})."
+    )
+).add_to(m)
 
     return m
