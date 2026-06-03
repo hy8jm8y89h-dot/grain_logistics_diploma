@@ -130,28 +130,51 @@ usd_data = get_cbr_usd_rate()
 regions = sorted(df["region"].unique())
 ports = sorted(df["port"].unique())
 
+st.subheader("Параметры маршрута")
+
+route_mode = st.radio(
+    "Выберите тип маршрута",
+    [
+        "Внутренний маршрут до российского порта",
+        "Экспортный маршрут с зарубежным направлением"
+    ],
+    horizontal=True
+)
+
 col1, col2 = st.columns(2)
 
 with col1:
-    selected_region = st.selectbox("Выберите регион отправления", regions)
+    selected_region = st.selectbox(
+        "Регион отправления",
+        regions
+    )
 
 with col2:
-    selected_port = st.selectbox("Выберите морской порт назначения", ports)
-
-    available_destinations = get_available_destinations(
-    destinations_df,
-    selected_port
-)
-
-if available_destinations:
-    selected_destination = st.selectbox(
-        "Выберите зарубежное направление",
-        available_destinations
+    selected_port = st.selectbox(
+        "Российский порт назначения",
+        ports
     )
+
+selected_destination = None
+
+if route_mode == "Экспортный маршрут с зарубежным направлением":
+    available_destinations = get_available_destinations(
+        destinations_df,
+        selected_port
+    )
+
+    if available_destinations:
+        selected_destination = st.selectbox(
+            "Зарубежное направление",
+            available_destinations
+        )
+    else:
+        st.warning(
+            "Для выбранного российского порта зарубежные направления пока не заданы."
+        )
 else:
-    selected_destination = None
-    st.warning(
-        "Для выбранного российского порта зарубежные направления пока не заданы."
+    st.info(
+        "Выбран внутренний маршрут: расчет выполняется до российского порта назначения."
     )
 
 
@@ -553,7 +576,9 @@ conclusion = generate_conclusion(
 st.subheader("Аналитический вывод")
 st.info(conclusion)
 
-if selected_destination:
+destination_conclusion = ""
+
+if route_mode == "Экспортный маршрут с зарубежным направлением" and selected_destination:
     international_result = calculate_international_route(
         best_route=best_route,
         destinations=destinations_df,
@@ -566,29 +591,37 @@ if selected_destination:
         international_result=international_result
     )
 
-    st.subheader("Международное направление доставки")
+    st.subheader("Экспортное направление доставки")
 
-    dest_col1, dest_col2, dest_col3 = st.columns(3)
+    dest_col1, dest_col2, dest_col3, dest_col4 = st.columns(4)
 
     with dest_col1:
         st.metric(
-            "Зарубежный порт",
-            f"{international_result['destination']}"
+            "Российский порт",
+            selected_port
         )
 
     with dest_col2:
         st.metric(
-            "Страна назначения",
-            f"{international_result['country']}"
+            "Зарубежный порт",
+            international_result["destination"]
         )
 
     with dest_col3:
+        st.metric(
+            "Страна назначения",
+            international_result["country"]
+        )
+
+    with dest_col4:
         st.metric(
             "Итоговая стоимость",
             f"{international_result['total_cost']} руб./т"
         )
 
     st.info(destination_conclusion)
+else:
+    international_result = None
 
 metric_col1, metric_col2, metric_col3 = st.columns(3)
 
@@ -827,13 +860,15 @@ st.caption(
     "зарубежное направление и расчетные участки маршрута."
 )
 
+map_selected_destination = selected_destination if route_mode == "Экспортный маршрут с зарубежным направлением" else None
+
 terminal_map = build_terminal_map(
     terminal_load_df=terminal_load_df,
     terminals_geo_df=terminals_geo_df,
     ports_geo_df=ports_geo_df,
     selected_port=selected_port,
     foreign_geo_df=foreign_geo_df,
-    selected_destination=selected_destination
+    selected_destination=map_selected_destination
 )
 
 map_left, map_center, map_right = st.columns([0.5, 5, 0.5])
@@ -882,7 +917,7 @@ final_report = generate_final_report(
     effective_river_change=effective_river_change
 )
 
-if selected_destination:
+if route_mode == "Экспортный маршрут с зарубежным направлением" and selected_destination:
     final_report += "\n\n" + destination_conclusion
 
 st.text_area(
