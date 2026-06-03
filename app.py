@@ -416,31 +416,37 @@ else:
 # СЦЕНАРНЫЙ АНАЛИЗ ТАРИФОВ
 # ============================================================
 
-st.subheader("Сценарный анализ изменения тарифов")
+st.divider()
+st.subheader("Сценарный анализ тарифов")
 
-scenario_col1, scenario_col2, scenario_col3 = st.columns(3)
+st.caption(
+    "В этом блоке задается изменение стоимости отдельных составляющих перевозки. "
+    "Параметры используются для пересчета стоимости маршрутов."
+)
 
-with scenario_col1:
+tariff_col1, tariff_col2, tariff_col3 = st.columns(3)
+
+with tariff_col1:
     rail_change = st.slider(
-        "Изменение Ж/Д тарифа, %",
+        "Ж/Д тариф, %",
         min_value=-30,
         max_value=50,
         value=0,
         step=1
     )
 
-with scenario_col2:
+with tariff_col2:
     auto_change = st.slider(
-        "Изменение автотарифа, %",
+        "Автотариф, %",
         min_value=-30,
         max_value=50,
         value=0,
         step=1
     )
 
-with scenario_col3:
+with tariff_col3:
     river_change = st.slider(
-        "Изменение речной составляющей, %",
+        "Речная составляющая, %",
         min_value=-30,
         max_value=50,
         value=0,
@@ -462,9 +468,15 @@ selected_port_load = get_selected_port_load(
 # ВНЕШНИЕ РЫНОЧНЫЕ ФАКТОРЫ
 # ============================================================
 
+st.divider()
 st.subheader("Оценка внешних рыночных факторов")
 
 st.caption(
+    "Система учитывает курс валют, мировую цену зерна, изменение стоимости топлива, "
+    "загруженность портов и новостной риск."
+)
+
+st.info(
     f"Курс USD загружен автоматически: {usd_data['rate']} руб. "
     f"Дата: {usd_data['date']}. Источник: {usd_data['source']}."
 )
@@ -481,11 +493,6 @@ with market_col1:
     )
 
 with market_col2:
-    st.caption(
-        f"Индикатор цены зерна: {market_indicators['wheat_price_usd_t']} долл./т. "
-        f"Источник: {market_indicators['wheat_source']}."
-    )
-
     grain_price = st.slider(
         "Мировая цена зерна, долл./т",
         min_value=100,
@@ -495,11 +502,6 @@ with market_col2:
     )
 
 with market_col3:
-    st.caption(
-        f"Индикатор нефти: {market_indicators['oil_price_usd_bbl']} долл./барр. "
-        f"Расчетное изменение топлива: {market_indicators['fuel_change_percent']}%."
-    )
-
     fuel_change = st.slider(
         "Изменение стоимости топлива, %",
         min_value=-30,
@@ -508,9 +510,23 @@ with market_col3:
         step=1
     )
 
-market_col4, market_col5 = st.columns(2)
+indicator_col1, indicator_col2 = st.columns(2)
 
-with market_col4:
+with indicator_col1:
+    st.caption(
+        f"Индикатор цены зерна: {market_indicators['wheat_price_usd_t']} долл./т. "
+        f"Источник: {market_indicators['wheat_source']}."
+    )
+
+with indicator_col2:
+    st.caption(
+        f"Индикатор нефти: {market_indicators['oil_price_usd_bbl']} долл./барр. "
+        f"Расчетное изменение топлива: {market_indicators['fuel_change_percent']}%."
+    )
+
+port_risk_col1, port_risk_col2 = st.columns(2)
+
+with port_risk_col1:
     use_port_load_as_congestion = st.checkbox(
         "Использовать расчетную загрузку выбранного порта",
         value=True
@@ -533,7 +549,7 @@ with market_col4:
             step=5
         )
 
-with market_col5:
+with port_risk_col2:
     manual_news_risk = st.slider(
         "Новостной риск вручную, 0–100",
         min_value=0,
@@ -547,7 +563,9 @@ with market_col5:
 # НОВОСТНАЯ СВОДКА
 # ============================================================
 
+st.divider()
 st.subheader("Новостная сводка")
+
 st.caption(
     "Новостная сводка используется для автоматической оценки внешнего риска "
     "и корректировки сценария выбора маршрута."
@@ -614,24 +632,23 @@ else:
 st.info(news_risk_result["risk_comment"])
 
 if top_news:
-    st.markdown("**Ключевые новости:**")
+    with st.expander("Показать ключевые новости", expanded=True):
+        for number, article in enumerate(top_news, start=1):
+            title = article.get("title", "Без заголовка")
+            source = article.get("source", "Источник не указан")
+            provider = article.get("provider", "Источник данных не указан")
+            url = article.get("url", "")
 
-    for number, article in enumerate(top_news, start=1):
-        title = article.get("title", "Без заголовка")
-        source = article.get("source", "Источник не указан")
-        provider = article.get("provider", "Источник данных не указан")
-        url = article.get("url", "")
-
-        if url:
-            st.markdown(
-                f"{number}. [{title}]({url})  \n"
-                f"   Источник: {source}, поставщик данных: {provider}"
-            )
-        else:
-            st.markdown(
-                f"{number}. {title}  \n"
-                f"   Источник: {source}, поставщик данных: {provider}"
-            )
+            if url:
+                st.markdown(
+                    f"**{number}. [{title}]({url})**  \n"
+                    f"Источник: {source}. Поставщик данных: {provider}."
+                )
+            else:
+                st.markdown(
+                    f"**{number}. {title}**  \n"
+                    f"Источник: {source}. Поставщик данных: {provider}."
+                )
 else:
     st.warning(
         "Новости не удалось загрузить. Используется нейтральная оценка новостного риска."
@@ -680,6 +697,7 @@ st.info(market_text)
 # ЗАГРУЗКА МОРСКИХ ПОРТОВ
 # ============================================================
 
+st.divider()
 st.subheader("Оценка загрузки морских портов назначения")
 
 port_col1, port_col2, port_col3 = st.columns(3)
@@ -735,10 +753,11 @@ port_fig.update_layout(
     xaxis_title="Морской порт"
 )
 
-st.dataframe(port_view, use_container_width=True)
-st.plotly_chart(port_fig, use_container_width=True)
+with st.expander("Подробная таблица и график загрузки портов", expanded=False):
+    st.dataframe(port_view, use_container_width=True)
+    st.plotly_chart(port_fig, use_container_width=True)
 
-with st.expander("Подключение AIS / MarineTraffic"):
+with st.expander("Подключение AIS / MarineTraffic", expanded=False):
     st.write(
         "В промышленной версии системы возможно подключение AIS-данных "
         "через MarineTraffic API. На этапе прототипа используется расчетная "
