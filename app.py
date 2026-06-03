@@ -1,20 +1,14 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import folium
+
 from pathlib import Path
-from modules.port_model import calculate_port_load, get_selected_port_load
 from streamlit_folium import st_folium
-from modules.map_model import build_terminal_map
+
+from modules import external_data
 
 from modules.report_model import generate_final_report
-
-from modules.external_data import (
-    get_cbr_usd_rate,
-    get_main_thematic_news,
-    calculate_news_risk_from_articles,
-    generate_news_digest,
-    get_auto_market_indicators
-)
 
 from modules.market_model import (
     calculate_market_risk,
@@ -41,12 +35,21 @@ from modules.terminal_model import (
     calculate_terminal_summary
 )
 
+from modules.port_model import (
+    calculate_port_load,
+    get_selected_port_load
+)
+
 from modules.destination_model import (
     get_available_destinations,
     calculate_international_route,
     generate_destination_conclusion
 )
 
+
+# ============================================================
+# НАСТРОЙКИ СТРАНИЦЫ
+# ============================================================
 
 st.set_page_config(
     page_title="Аналитическая система зерновой логистики",
@@ -61,6 +64,10 @@ st.write(
 )
 
 
+# ============================================================
+# ПУТИ К ДАННЫМ
+# ============================================================
+
 DATA_PATH = Path("data/routes.csv")
 HISTORY_PATH = Path("data/grain_transport_history.csv")
 TERMINALS_PATH = Path("data/terminals.csv")
@@ -71,71 +78,296 @@ PORTS_GEO_PATH = Path("data/ports_geo.csv")
 FOREIGN_GEO_PATH = Path("data/foreign_destinations_geo.csv")
 
 
-@st.cache_data
-def load_routes(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path)
+# ============================================================
+# БЕЗОПАСНЫЕ ФУНКЦИИ ЗАГРУЗКИ
+# ============================================================
 
 @st.cache_data
-def load_destinations(path: Path) -> pd.DataFrame:
+def load_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
-@st.cache_data
-def load_history(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path)
-
-@st.cache_data
-def load_terminals(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path)
-
-@st.cache_data
-def load_port_load(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path)
-
-@st.cache_data
-def load_terminals_geo(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path)
-
-
-@st.cache_data
-def load_ports_geo(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path)
-
-@st.cache_data
-def load_foreign_geo(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path)
 
 @st.cache_data(ttl=1800)
-def load_news_digest(query: str, max_records: int = 3):
-    articles = get_main_thematic_news(query, max_records=max_records)
-    risk_result = calculate_news_risk_from_articles(articles)
-    digest = generate_news_digest(articles, risk_result)
+def load_news_digest_safe(query: str, max_records: int = 3):
+    """
+    Безопасная загрузка новостей.
+    Даже если внешний источник не ответит, приложение не упадет.
+    """
+    try:
+        articles = external_data.get_main_thematic_news(
+            query,
+            max_records=max_records
+        )
+    except Exception:
+        articles = []
+
+    try:
+        risk_result = external_data.calculate_news_risk_from_articles(articles)
+    except Exception:
+        risk_result = {
+            "news_risk": 30,
+            "risk_comment": (
+                "Новости не удалось автоматически обработать. "
+                "Используется нейтральная оценка новостного риска."
+            )
+        }
+
+    try:
+        digest = external_data.generate_news_digest(articles, risk_result)
+    except Exception:
+        digest = ""
+
     return articles, risk_result, digest
 
 
-df = load_routes(DATA_PATH)
-history_df = load_history(HISTORY_PATH)
-terminals_df = load_terminals(TERMINALS_PATH)
-destinations_df = load_destinations(DESTINATIONS_PATH)
-port_load_source_df = load_port_load(PORT_LOAD_PATH)
+def get_usd_rate_safe() -> dict:
+    """
+    Безопасное получение курса доллара.
+    """
+    try:
+        return external_data.get_cbr_usd_rate()
+    except Exception:
+        return {
+            "rate": 90.0,
+            "date": "нет данных",
+            "source": "Резервное значение"
+        }
+
+
+def get_market_indicators_safe() -> dict:
+    """
+    Безопасное получение рыночных индикаторов.
+    Если функции get_auto_market_indicators нет или источник недоступен,
+    используются резервные значения.
+    """
+    fallback = {
+        "wheat_price_usd_t": 230.0,
+        "wheat_source": "Резервное значение",
+        "wheat_date": "",
+        "oil_price_usd_bbl": 80.0,
+        "oil_source": "Резервное значение",
+        "oil_date": "",
+        "fuel_change_percent": 0.0
+    }
+
+    market_func = getattr(external_data, "get_auto_market_indicators", None)
+
+    if market_func is None:
+        return fallback
+
+    try:
+        data = market_func()
+
+        required_keys = [
+            "wheat_price_usd_t",
+            "wheat_source",
+            "oil_price_usd_bbl",
+            "oil_source",
+            "fuel_change_percent"
+        ]
+
+        for key in required_keys:
+            if key not in data:
+                return fallback
+
+        return data
+
+    except Exception:
+        return fallback
+
+
+# ============================================================
+# КАРТА МАРШРУТОВ
+# ============================================================
+
+def get_terminal_marker_color(status: str) -> str:
+    if status == "Низкая загрузка":
+        return "green"
+    if status == "Нормальная загрузка":
+        return "blue"
+    if status == "Высокая загрузка":
+        return "orange"
+    if status == "Перегрузка":
+        return "red"
+    return "gray"
+
+
+def build_terminal_map_safe(
+    terminal_load_df: pd.DataFrame,
+    terminals_geo_df: pd.DataFrame,
+    ports_geo_df: pd.DataFrame,
+    selected_port: str,
+    foreign_geo_df: pd.DataFrame | None = None,
+    selected_destination: str | None = None
+):
+    """
+    Безопасная карта:
+    терминалы -> российский порт -> зарубежное направление.
+    Ошибка selected_foreign здесь невозможна.
+    """
+
+    map_df = terminal_load_df.merge(
+        terminals_geo_df,
+        on="terminal",
+        how="left"
+    )
+
+    selected_port_row = ports_geo_df[
+        ports_geo_df["port"] == selected_port
+    ]
+
+    if not selected_port_row.empty:
+        port_row = selected_port_row.iloc[0]
+        center_lat = float(port_row["lat"])
+        center_lon = float(port_row["lon"])
+    else:
+        center_lat = 50.5
+        center_lon = 47.0
+
+    m = folium.Map(
+        location=[center_lat, center_lon],
+        zoom_start=5,
+        tiles="CartoDB positron"
+    )
+
+    # Терминалы
+    for _, row in map_df.dropna(subset=["lat", "lon"]).iterrows():
+        color = get_terminal_marker_color(row.get("status", ""))
+
+        planned_volume = row.get("planned_volume_thousand_tons", 0)
+        load_percent = row.get("load_percent", 0)
+        capacity = row.get("capacity_thousand_tons", 0)
+
+        popup_text = (
+            f"<b>{row['terminal']}</b><br>"
+            f"Регион: {row['region']}<br>"
+            f"Мощность: {capacity} тыс. т/год<br>"
+            f"Плановый объем: {planned_volume} тыс. т<br>"
+            f"Загрузка: {load_percent}%<br>"
+            f"Статус: {row.get('status', 'нет данных')}"
+        )
+
+        folium.CircleMarker(
+            location=[float(row["lat"]), float(row["lon"])],
+            radius=8,
+            color=color,
+            fill=True,
+            fill_color=color,
+            fill_opacity=0.75,
+            popup=folium.Popup(popup_text, max_width=300),
+            tooltip=row["terminal"]
+        ).add_to(m)
+
+    port_lat = None
+    port_lon = None
+
+    # Российский порт
+    if not selected_port_row.empty:
+        port = selected_port_row.iloc[0]
+        port_lat = float(port["lat"])
+        port_lon = float(port["lon"])
+
+        folium.Marker(
+            location=[port_lat, port_lon],
+            popup=f"<b>{port['port']}</b><br>{port.get('type', 'Порт')}",
+            tooltip=f"Российский порт: {port['port']}",
+            icon=folium.Icon(color="purple", icon="anchor", prefix="fa")
+        ).add_to(m)
+
+        # Линии терминалы -> порт
+        for _, row in map_df.dropna(subset=["lat", "lon"]).iterrows():
+            planned_volume = float(row.get("planned_volume_thousand_tons", 0))
+            line_weight = max(1, min(6, planned_volume / 250))
+
+            folium.PolyLine(
+                locations=[
+                    [float(row["lat"]), float(row["lon"])],
+                    [port_lat, port_lon]
+                ],
+                color="blue",
+                weight=line_weight,
+                opacity=0.35,
+                tooltip=(
+                    f"Внутрироссийский участок: {row['terminal']} → {selected_port}. "
+                    f"Плановый объем: {planned_volume} тыс. т. "
+                    f"Загрузка терминала: {row.get('load_percent', 0)}%."
+                )
+            ).add_to(m)
+
+    # Зарубежный порт
+    if (
+        foreign_geo_df is not None
+        and selected_destination is not None
+        and selected_destination != ""
+        and port_lat is not None
+        and port_lon is not None
+    ):
+        selected_foreign_row = foreign_geo_df[
+            foreign_geo_df["destination"] == selected_destination
+        ]
+
+        if not selected_foreign_row.empty:
+            foreign = selected_foreign_row.iloc[0]
+            foreign_lat = float(foreign["lat"])
+            foreign_lon = float(foreign["lon"])
+
+            folium.Marker(
+                location=[foreign_lat, foreign_lon],
+                popup=(
+                    f"<b>{foreign['destination']}</b><br>"
+                    f"Страна: {foreign['country']}"
+                ),
+                tooltip=f"Зарубежный порт: {foreign['destination']}",
+                icon=folium.Icon(color="red", icon="flag", prefix="fa")
+            ).add_to(m)
+
+            folium.PolyLine(
+                locations=[
+                    [port_lat, port_lon],
+                    [foreign_lat, foreign_lon]
+                ],
+                color="red",
+                weight=5,
+                opacity=0.8,
+                tooltip=(
+                    f"Международный участок: {selected_port} → "
+                    f"{foreign['destination']} ({foreign['country']})."
+                )
+            ).add_to(m)
+
+    return m
+
+
+# ============================================================
+# ЗАГРУЗКА ДАННЫХ
+# ============================================================
+
+df = load_csv(DATA_PATH)
+history_df = load_csv(HISTORY_PATH)
+terminals_df = load_csv(TERMINALS_PATH)
+destinations_df = load_csv(DESTINATIONS_PATH)
+port_load_source_df = load_csv(PORT_LOAD_PATH)
+terminals_geo_df = load_csv(TERMINALS_GEO_PATH)
+ports_geo_df = load_csv(PORTS_GEO_PATH)
+foreign_geo_df = load_csv(FOREIGN_GEO_PATH)
+
 port_load_df = calculate_port_load(port_load_source_df)
-terminals_geo_df = load_terminals_geo(TERMINALS_GEO_PATH)
-ports_geo_df = load_ports_geo(PORTS_GEO_PATH)
-foreign_geo_df = load_foreign_geo(FOREIGN_GEO_PATH)
-usd_data = get_cbr_usd_rate()
-market_indicators = get_auto_market_indicators()
+
+usd_data = get_usd_rate_safe()
+market_indicators = get_market_indicators_safe()
 
 
-# =========================
-# Выбор направления
-# =========================
-
-regions = sorted(df["region"].unique())
-ports = sorted(df["port"].unique())
+# ============================================================
+# ВЫБОР МАРШРУТА
+# ============================================================
 
 st.subheader("Параметры маршрута")
 
+regions = sorted(df["region"].dropna().unique())
+ports = sorted(df["port"].dropna().unique())
+
 route_mode = st.radio(
-    "Выберите тип маршрута",
+    "Тип маршрута",
     [
         "Внутренний маршрут до российского порта",
         "Экспортный маршрут с зарубежным направлением"
@@ -180,9 +412,9 @@ else:
     )
 
 
-# =========================
-# Сценарный анализ тарифов
-# =========================
+# ============================================================
+# СЦЕНАРНЫЙ АНАЛИЗ ТАРИФОВ
+# ============================================================
 
 st.subheader("Сценарный анализ изменения тарифов")
 
@@ -216,9 +448,19 @@ with scenario_col3:
     )
 
 
-# =========================
-# Внешние рыночные факторы
-# =========================
+# ============================================================
+# ЗАГРУЗКА ПОРТА
+# ============================================================
+
+selected_port_load = get_selected_port_load(
+    port_load_df=port_load_df,
+    selected_port=selected_port
+)
+
+
+# ============================================================
+# ВНЕШНИЕ РЫНОЧНЫЕ ФАКТОРЫ
+# ============================================================
 
 st.subheader("Оценка внешних рыночных факторов")
 
@@ -234,13 +476,13 @@ with market_col1:
         "Курс доллара, руб.",
         min_value=50,
         max_value=150,
-        value=int(round(usd_data["rate"])),
+        value=int(round(float(usd_data["rate"]))),
         step=1
     )
 
 with market_col2:
     st.caption(
-        f"Авто: {market_indicators['wheat_price_usd_t']} долл./т. "
+        f"Индикатор цены зерна: {market_indicators['wheat_price_usd_t']} долл./т. "
         f"Источник: {market_indicators['wheat_source']}."
     )
 
@@ -248,7 +490,7 @@ with market_col2:
         "Мировая цена зерна, долл./т",
         min_value=100,
         max_value=400,
-        value=int(round(market_indicators["wheat_price_usd_t"])),
+        value=int(round(float(market_indicators["wheat_price_usd_t"]))),
         step=5
     )
 
@@ -262,20 +504,34 @@ with market_col3:
         "Изменение стоимости топлива, %",
         min_value=-30,
         max_value=80,
-        value=int(round(market_indicators["fuel_change_percent"])),
+        value=int(round(float(market_indicators["fuel_change_percent"]))),
         step=1
     )
 
 market_col4, market_col5 = st.columns(2)
 
 with market_col4:
-    port_congestion = st.slider(
-        "Загруженность морских портов, %",
-        min_value=0,
-        max_value=100,
-        value=70,
-        step=5
+    use_port_load_as_congestion = st.checkbox(
+        "Использовать расчетную загрузку выбранного порта",
+        value=True
     )
+
+    if use_port_load_as_congestion:
+        port_congestion = int(
+            round(float(selected_port_load["adjusted_load_percent"]))
+        )
+        st.metric(
+            "Загруженность морских портов",
+            f"{port_congestion}%"
+        )
+    else:
+        port_congestion = st.slider(
+            "Загруженность морских портов, %",
+            min_value=0,
+            max_value=100,
+            value=70,
+            step=5
+        )
 
 with market_col5:
     manual_news_risk = st.slider(
@@ -287,11 +543,11 @@ with market_col5:
     )
 
 
-# =========================
-# Новостная сводка
-# =========================
+# ============================================================
+# НОВОСТНАЯ СВОДКА
+# ============================================================
 
-st.subheader("Новостная сводка по рынку зерна и портовой логистике")
+st.subheader("Новостная сводка")
 st.caption(
     "Новостная сводка используется для автоматической оценки внешнего риска "
     "и корректировки сценария выбора маршрута."
@@ -311,7 +567,7 @@ selected_news_topic = st.selectbox(
 
 news_query = news_topics[selected_news_topic]
 
-news_articles, news_risk_result, news_digest = load_news_digest(
+news_articles, news_risk_result, news_digest = load_news_digest_safe(
     news_query,
     max_records=3
 )
@@ -327,7 +583,7 @@ with news_col1:
     )
 
 with news_col2:
-    news_source_name = top_news[0]["provider"] if top_news else "Нет данных"
+    news_source_name = top_news[0].get("provider", "Нет данных") if top_news else "Нет данных"
     st.metric(
         "Источник",
         news_source_name
@@ -345,7 +601,7 @@ use_auto_news_risk = st.checkbox(
 )
 
 if use_auto_news_risk:
-    news_risk = news_risk_result["news_risk"]
+    news_risk = int(news_risk_result["news_risk"])
     st.success(
         f"В общий индекс рыночного риска подставлен новостной риск {news_risk} из 100."
     )
@@ -381,58 +637,10 @@ else:
         "Новости не удалось загрузить. Используется нейтральная оценка новостного риска."
     )
 
-# =========================
-# Загрузка морских портов
-# =========================
 
-st.subheader("Оценка загрузки морских портов назначения")
-
-selected_port_load = get_selected_port_load(
-    port_load_df=port_load_df,
-    selected_port=selected_port
-)
-
-port_col1, port_col2, port_col3 = st.columns(3)
-
-with port_col1:
-    st.metric(
-        "Выбранный порт",
-        selected_port_load["port"]
-    )
-
-with port_col2:
-    st.metric(
-        "Расчетная загрузка порта",
-        f"{selected_port_load['adjusted_load_percent']}%"
-    )
-
-with port_col3:
-    st.metric(
-        "Среднее ожидание",
-        f"{selected_port_load['waiting_days']} суток"
-    )
-
-st.info(
-    f"Статус порта «{selected_port_load['port']}»: "
-    f"{selected_port_load['status']}."
-)
-
-# график загрузки портов
-st.dataframe(port_view, width="stretch")
-st.plotly_chart(port_fig, width="stretch")
-
-# <<< Вставляем здесь блок MarineTraffic >>>
-with st.expander("Подключение AIS / MarineTraffic"):
-    st.write(
-        "В промышленной версии системы возможно подключение AIS-данных "
-        "через MarineTraffic API. На этапе прототипа используется расчетная "
-        "оценка загрузки портов на основе пропускной способности, ожидания "
-        "обработки и новостного риска."
-    )
-
-# =========================
-# Расчет общего рыночного риска
-# =========================
+# ============================================================
+# РЫНОЧНЫЙ РИСК
+# ============================================================
 
 market_risk = calculate_market_risk(
     usd_rate=usd_rate,
@@ -468,9 +676,82 @@ with risk_col2:
 st.info(market_text)
 
 
-# =========================
-# Учет риска в тарифном сценарии
-# =========================
+# ============================================================
+# ЗАГРУЗКА МОРСКИХ ПОРТОВ
+# ============================================================
+
+st.subheader("Оценка загрузки морских портов назначения")
+
+port_col1, port_col2, port_col3 = st.columns(3)
+
+with port_col1:
+    st.metric(
+        "Выбранный порт",
+        selected_port_load["port"]
+    )
+
+with port_col2:
+    st.metric(
+        "Расчетная загрузка порта",
+        f"{selected_port_load['adjusted_load_percent']}%"
+    )
+
+with port_col3:
+    st.metric(
+        "Среднее ожидание",
+        f"{selected_port_load['waiting_days']} суток"
+    )
+
+st.info(
+    f"Статус порта «{selected_port_load['port']}»: "
+    f"{selected_port_load['status']}."
+)
+
+port_view = port_load_df.rename(
+    columns={
+        "port": "Порт",
+        "capacity_thousand_tons": "Пропускная способность, тыс. т",
+        "current_volume_thousand_tons": "Текущий объем, тыс. т",
+        "waiting_days": "Ожидание, суток",
+        "risk_factor": "Коэффициент риска",
+        "base_load_percent": "Базовая загрузка, %",
+        "adjusted_load_percent": "Расчетная загрузка, %",
+        "status": "Статус"
+    }
+)
+
+port_fig = px.bar(
+    port_view,
+    x="Порт",
+    y="Расчетная загрузка, %",
+    color="Статус",
+    text="Расчетная загрузка, %",
+    title="Сравнение загрузки морских портов назначения"
+)
+
+port_fig.update_traces(textposition="outside")
+port_fig.update_layout(
+    yaxis_title="Загрузка, %",
+    xaxis_title="Морской порт"
+)
+
+st.dataframe(port_view, use_container_width=True)
+st.plotly_chart(port_fig, use_container_width=True)
+
+with st.expander("Подключение AIS / MarineTraffic"):
+    st.write(
+        "В промышленной версии системы возможно подключение AIS-данных "
+        "через MarineTraffic API. На этапе прототипа используется расчетная "
+        "оценка загрузки портов на основе пропускной способности, ожидания "
+        "обработки и новостного риска."
+    )
+
+
+# ============================================================
+# УЧЕТ РИСКА В ТАРИФАХ
+# ============================================================
+
+st.subheader("Учет рыночного риска в тарифном сценарии")
 
 use_market_risk_in_tariffs = st.checkbox(
     "Автоматически учитывать рыночный риск в тарифном сценарии",
@@ -496,14 +777,20 @@ if use_market_risk_in_tariffs:
     )
 
 
-# =========================
-# Расчет маршрутов
-# =========================
+# ============================================================
+# РАСЧЕТ МАРШРУТОВ
+# ============================================================
 
 filtered = df[
     (df["region"] == selected_region) &
     (df["port"] == selected_port)
 ].copy()
+
+if filtered.empty:
+    st.error(
+        "Для выбранного региона и порта нет данных в файле routes.csv."
+    )
+    st.stop()
 
 effective_rail_change = rail_change + risk_adjustments["rail_risk_add"]
 effective_auto_change = auto_change + risk_adjustments["auto_risk_add"]
@@ -542,13 +829,8 @@ comparison_table_view = comparison_table_view[
     ]
 ]
 
-
-# =========================
-# Отображение результатов маршрута
-# =========================
-
 st.subheader("Сравнение вариантов доставки")
-st.dataframe(comparison_table_view, width="stretch")
+st.dataframe(comparison_table_view, use_container_width=True)
 
 st.subheader("Рекомендация системы")
 st.success(
@@ -569,7 +851,13 @@ conclusion = generate_conclusion(
 st.subheader("Аналитический вывод")
 st.info(conclusion)
 
+
+# ============================================================
+# ЭКСПОРТНОЕ НАПРАВЛЕНИЕ
+# ============================================================
+
 destination_conclusion = ""
+international_result = None
 
 if route_mode == "Экспортный маршрут с зарубежным направлением" and selected_destination:
     international_result = calculate_international_route(
@@ -613,8 +901,11 @@ if route_mode == "Экспортный маршрут с зарубежным н
         )
 
     st.info(destination_conclusion)
-else:
-    international_result = None
+
+
+# ============================================================
+# ЭКОНОМИЯ И ГРАФИК МАРШРУТОВ
+# ============================================================
 
 metric_col1, metric_col2, metric_col3 = st.columns(3)
 
@@ -639,7 +930,6 @@ with metric_col3:
         delta=f"{savings['rail_saving_percent']}%"
     )
 
-
 st.subheader("Графическое сравнение стоимости маршрутов")
 
 fig = px.bar(
@@ -661,15 +951,14 @@ fig.update_layout(
     xaxis_title="Вариант маршрута"
 )
 
-st.plotly_chart(fig, width="stretch")
+st.plotly_chart(fig, use_container_width=True)
 
 
-# =========================
-# Прогноз перевозок
-# =========================
+# ============================================================
+# ПРОГНОЗ ПЕРЕВОЗОК
+# ============================================================
 
 st.divider()
-
 st.header("Прогноз перевозок зерна речным транспортом")
 
 forecast_type = st.radio(
@@ -716,7 +1005,7 @@ forecast_view = forecast_df.rename(
 )
 
 st.subheader("Таблица прогноза")
-st.dataframe(forecast_view, width="stretch")
+st.dataframe(forecast_view, use_container_width=True)
 
 forecast_fig = px.line(
     forecast_df,
@@ -732,7 +1021,7 @@ forecast_fig = px.line(
     title="Динамика и прогноз перевозок зерна речным транспортом"
 )
 
-st.plotly_chart(forecast_fig, width="stretch")
+st.plotly_chart(forecast_fig, use_container_width=True)
 
 st.info(
     "Прогнозный модуль позволяет оценить возможную динамику перевозок зерна "
@@ -742,15 +1031,14 @@ st.info(
 )
 
 
-# =========================
-# Загрузка терминалов
-# =========================
+# ============================================================
+# ЗАГРУЗКА ТЕРМИНАЛОВ И КАРТА
+# ============================================================
 
 st.divider()
-
 st.header("Оценка загрузки речных зерновых терминалов")
 
-terminal_regions = ["Все регионы"] + sorted(terminals_df["region"].unique())
+terminal_regions = ["Все регионы"] + sorted(terminals_df["region"].dropna().unique())
 
 selected_terminal_region = st.selectbox(
     "Выберите регион терминалов для анализа",
@@ -822,7 +1110,7 @@ terminal_view = terminal_load_df.rename(
 )
 
 st.subheader("Таблица загрузки терминалов")
-st.dataframe(terminal_view, width="stretch")
+st.dataframe(terminal_view, use_container_width=True)
 
 terminal_fig = px.bar(
     terminal_view,
@@ -844,7 +1132,7 @@ terminal_fig.update_layout(
     xaxis_title="Терминал"
 )
 
-st.plotly_chart(terminal_fig, width="stretch")
+st.plotly_chart(terminal_fig, use_container_width=True)
 
 st.subheader("Карта маршрута: терминалы — российский порт — зарубежное направление")
 
@@ -853,19 +1141,24 @@ st.caption(
     "зарубежное направление и расчетные участки маршрута."
 )
 
-show_foreign_on_map = True
+show_foreign_on_map = False
 
 if route_mode == "Экспортный маршрут с зарубежным направлением":
     show_foreign_on_map = st.checkbox(
         "Показывать зарубежное направление на карте",
         value=True
     )
-if route_mode == "Экспортный маршрут с зарубежным направлением" and show_foreign_on_map:
+
+if (
+    route_mode == "Экспортный маршрут с зарубежным направлением"
+    and show_foreign_on_map
+    and selected_destination
+):
     map_selected_destination = selected_destination
 else:
     map_selected_destination = None
 
-terminal_map = build_terminal_map(
+terminal_map = build_terminal_map_safe(
     terminal_load_df=terminal_load_df,
     terminals_geo_df=terminals_geo_df,
     ports_geo_df=ports_geo_df,
@@ -899,12 +1192,11 @@ st.info(
 )
 
 
-# =========================
-# Итоговый отчет
-# =========================
+# ============================================================
+# ИТОГОВЫЙ ОТЧЕТ
+# ============================================================
 
 st.divider()
-
 st.header("Итоговый аналитический отчет")
 
 final_report = generate_final_report(
@@ -920,7 +1212,7 @@ final_report = generate_final_report(
     effective_river_change=effective_river_change
 )
 
-if route_mode == "Экспортный маршрут с зарубежным направлением" and selected_destination:
+if route_mode == "Экспортный маршрут с зарубежным направлением" and destination_conclusion:
     final_report += "\n\n" + destination_conclusion
 
 st.text_area(

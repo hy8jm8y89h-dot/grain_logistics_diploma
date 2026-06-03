@@ -700,3 +700,137 @@ def get_auto_market_indicators() -> dict:
         "oil_date": oil_quote.get("date", ""),
         "fuel_change_percent": fuel_change
     }
+def get_stooq_quote(symbol: str) -> dict:
+    """
+    Получает котировку с Stooq по тикеру.
+
+    Примеры:
+    ZW.F — wheat futures
+    CL.F — crude oil futures
+    """
+    url = "https://stooq.com/q/l/"
+
+    params = {
+        "s": symbol.lower(),
+        "f": "sd2t2ohlcv",
+        "h": "",
+        "e": "csv"
+    }
+
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=15
+        )
+        response.raise_for_status()
+
+        lines = response.text.strip().splitlines()
+
+        if len(lines) < 2:
+            raise ValueError("Пустой ответ Stooq")
+
+        header = lines[0].split(",")
+        values = lines[1].split(",")
+
+        data = dict(zip(header, values))
+
+        close_text = data.get("Close", "N/D")
+
+        if close_text in ["N/D", "", None]:
+            raise ValueError("Нет значения Close")
+
+        close = float(close_text)
+
+        return {
+            "symbol": symbol,
+            "value": close,
+            "date": data.get("Date", ""),
+            "time": data.get("Time", ""),
+            "source": "Stooq",
+            "is_actual": True
+        }
+
+    except Exception as error:
+        return {
+            "symbol": symbol,
+            "value": None,
+            "date": "",
+            "time": "",
+            "source": f"Резервное значение, ошибка: {error}",
+            "is_actual": False
+        }
+
+
+def convert_wheat_cents_bushel_to_usd_t(value_cents_per_bushel: float) -> float:
+    """
+    Переводит котировку пшеницы из центов за бушель в долл./т.
+    """
+    usd_per_bushel = value_cents_per_bushel / 100
+    usd_per_ton = usd_per_bushel / 0.0272155
+
+    return round(usd_per_ton, 2)
+
+
+def get_auto_market_indicators() -> dict:
+    """
+    Получает автоматические рыночные индикаторы:
+    - мировая цена пшеницы;
+    - цена нефти как прокси стоимости топлива;
+    - расчетное изменение топлива.
+    """
+    wheat_quote = get_stooq_quote("ZW.F")
+    oil_quote = get_stooq_quote("CL.F")
+
+    wheat_price_usd_t = 230.0
+    oil_price_usd_bbl = 80.0
+
+    wheat_source = wheat_quote["source"]
+    oil_source = oil_quote["source"]
+
+    if wheat_quote["value"] is not None:
+        wheat_price_usd_t = convert_wheat_cents_bushel_to_usd_t(
+            wheat_quote["value"]
+        )
+
+    if oil_quote["value"] is not None:
+        oil_price_usd_bbl = float(oil_quote["value"])
+
+    fuel_change = ((oil_price_usd_bbl - 80) / 80 * 100)
+    fuel_change = round(max(min(fuel_change, 80), -30), 1)
+
+    return {
+        "wheat_price_usd_t": wheat_price_usd_t,
+        "wheat_source": wheat_source,
+        "wheat_date": wheat_quote.get("date", ""),
+        "oil_price_usd_bbl": round(oil_price_usd_bbl, 2),
+        "oil_source": oil_source,
+        "oil_date": oil_quote.get("date", ""),
+        "fuel_change_percent": fuel_change
+    }
+def get_auto_market_indicators() -> dict:
+    """
+    Получает автоматические рыночные индикаторы.
+    Если внешний источник недоступен, возвращает резервные значения.
+    """
+
+    wheat_price_usd_t = 230.0
+    oil_price_usd_bbl = 80.0
+
+    fuel_change = ((oil_price_usd_bbl - 80) / 80 * 100)
+    fuel_change = round(max(min(fuel_change, 80), -30), 1)
+
+    return {
+        "wheat_price_usd_t": wheat_price_usd_t,
+        "wheat_source": "Резервное значение",
+        "wheat_date": "",
+        "oil_price_usd_bbl": oil_price_usd_bbl,
+        "oil_source": "Резервное значение",
+        "oil_date": "",
+        "fuel_change_percent": fuel_change
+    }
