@@ -10,6 +10,8 @@ from modules import external_data
 
 from modules.report_model import generate_final_report
 
+from modules.ai_model import generate_ai_analysis
+
 from modules.market_model import (
     calculate_market_risk,
     generate_market_text,
@@ -1216,6 +1218,39 @@ st.info(
 # ============================================================
 
 st.divider()
+st.divider()
+st.header("Интеллектуальный ИИ-анализ и прогноз")
+
+st.caption(
+    "ИИ-модуль получает расчетные показатели системы: стоимость маршрутов, "
+    "рыночный риск, новостной риск, загрузку портов и терминалов, прогноз перевозок "
+    "и формирует аналитическое заключение."
+)
+
+if st.button("Сформировать ИИ-анализ"):
+    with st.spinner("ИИ-модуль анализирует выбранный сценарий..."):
+        ai_analysis = generate_ai_analysis(
+            selected_region=selected_region,
+            selected_port=selected_port,
+            route_mode=route_mode,
+            selected_destination=selected_destination,
+            best_route=best_route,
+            savings=savings,
+            market_risk=market_risk,
+            news_risk=news_risk,
+            selected_port_load=selected_port_load,
+            forecast_summary=forecast_summary,
+            terminal_summary=terminal_summary,
+            effective_rail_change=effective_rail_change,
+            effective_auto_change=effective_auto_change,
+            effective_river_change=effective_river_change,
+            comparison_table_view=comparison_table_view,
+        )
+
+    st.session_state["ai_analysis"] = ai_analysis
+
+if "ai_analysis" in st.session_state:
+    st.markdown(st.session_state["ai_analysis"])
 st.header("Итоговый аналитический отчет")
 
 final_report = generate_final_report(
